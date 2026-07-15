@@ -1,0 +1,90 @@
+#!/bin/bash
+
+# Preview what `omarchy update` would do, without doing it.
+# Read-only: fetches git refs and syncs checkupdates' own temp db, nothing else.
+
+set -uo pipefail
+
+OMARCHY_PATH="${OMARCHY_PATH:-$HOME/.local/share/omarchy}"
+STATE_DIR="$HOME/.local/state/omarchy/migrations"
+
+# hyprpm plugins are compiled against one exact Hyprland version, and the
+# quickshell bar breaks on QML API changes. Both survive an update only if
+# these packages stay put.
+CRITICAL='hyprland|quickshell|qt6|mesa'
+
+green=$'\e[32m'; yellow=$'\e[33m'; bold=$'\e[1m'; reset=$'\e[0m'
+section() { printf '\n%s==> %s%s\n' "$bold" "$*" "$reset"; }
+ok() { printf '%s%s%s\n' "$green" "$*" "$reset"; }
+warn() { printf '%s%s%s\n' "$yellow" "$*" "$reset"; }
+
+if [[ ! -d $OMARCHY_PATH/.git ]]; then
+  echo "No Omarchy git repo at $OMARCHY_PATH" >&2
+  exit 1
+fi
+
+branch=$(git -C "$OMARCHY_PATH" rev-parse --abbrev-ref HEAD)
+
+section "Omarchy — branch '$branch'"
+git -C "$OMARCHY_PATH" fetch origin "$branch" --quiet 2>/dev/null
+commits=$(git -C "$OMARCHY_PATH" rev-list --count "HEAD..origin/$branch" 2>/dev/null || echo 0)
+if ((commits > 0)); then
+  warn "$commits neue Commits"
+  git -C "$OMARCHY_PATH" log --oneline "HEAD..origin/$branch" | head -20
+  printf 'Version: %s -> %s\n' \
+    "$(cat "$OMARCHY_PATH/version" 2>/dev/null)" \
+    "$(git -C "$OMARCHY_PATH" show "origin/$branch:version" 2>/dev/null)"
+else
+  ok "aktuell — keine neuen Commits"
+fi
+
+section "Migrationen — die einzigen, die ~/.config anfassen duerfen"
+pending=0
+while read -r f; do
+  [[ -n $f ]] || continue
+  n=${f##*/}
+  [[ -f $STATE_DIR/$n || -f $STATE_DIR/skipped/$n ]] && continue
+  printf '  neu:        %s\n' "$n"
+  ((pending++))
+done < <(git -C "$OMARCHY_PATH" diff --name-only "HEAD..origin/$branch" -- migrations/ 2>/dev/null)
+for f in "$OMARCHY_PATH"/migrations/*.sh; do
+  [[ -e $f ]] || continue
+  n=${f##*/}
+  [[ -f $STATE_DIR/$n || -f $STATE_DIR/skipped/$n ]] && continue
+  printf '  ausstehend: %s\n' "$n"
+  ((pending++))
+done
+((pending == 0)) && ok "keine"
+
+section "Pakete — offizielle Repos"
+repo=$(checkupdates 2>/dev/null)
+if [[ -n $repo ]]; then
+  printf '%s\n' "$repo"
+  printf '(%s Pakete)\n' "$(printf '%s\n' "$repo" | wc -l)"
+else
+  ok "keine"
+fi
+
+section "Pakete — AUR"
+aur=""
+if command -v yay >/dev/null 2>&1; then
+  aur=$(yay -Qua 2>/dev/null)
+fi
+if [[ -n $aur ]]; then
+  printf '%s\n' "$aur"
+else
+  ok "keine"
+fi
+
+section "Kritisch fuer dieses Setup"
+crit=$(printf '%s\n%s\n' "$repo" "$aur" | grep -iE "$CRITICAL")
+if [[ -n $crit ]]; then
+  warn "$crit"
+  echo
+  warn "-> hyprland dabei:   Plugins danach neu bauen mit 'hyprpm update'"
+  warn "-> quickshell dabei: Rise-Bar im Auge behalten"
+else
+  ok "nichts dabei — Plugin und Bar bleiben unberuehrt"
+fi
+
+echo

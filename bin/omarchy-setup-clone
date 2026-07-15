@@ -1,0 +1,167 @@
+#!/bin/bash
+
+# Reproduce this Omarchy setup on another machine: quickshell "Rise" bar
+# (+ AI usage widget, + weather pinned to a city) and the scrolloverview
+# Hyprland plugin.
+#
+# Idempotent: every step checks first and skips what is already in place.
+#
+# Usage:
+#   omarchy-setup-clone --dry-run     # show what would happen, change nothing
+#   omarchy-setup-clone               # do it (will prompt for sudo)
+#
+# Env overrides:
+#   WEATHER_CITY=Graz                 # city pinned into the weather widgets
+#
+# NOT covered (copy these files over instead):
+#   ~/.config/hypr/{hypridle,bindings,autostart,input}.*
+#   ~/.local/bin/omarchy-update-preview
+
+set -uo pipefail
+
+CITY="${WEATHER_CITY:-Graz}"
+BAR_DIR="$HOME/.config/quickshell/bar"
+RISE_INSTALLER="https://raw.githubusercontent.com/HANCORE-linux/quickshell-dots/main/install.sh"
+PLUGIN_REPO="https://github.com/yayuuu/hyprland-scroll-overview.git"
+PLUGIN_NAME="scrolloverview"
+BUILD_DEPS=(cmake meson ninja)
+
+DRY=0
+[[ ${1:-} == "--dry-run" || ${1:-} == "-n" ]] && DRY=1
+
+bold=$'\e[1m'; green=$'\e[32m'; yellow=$'\e[33m'; red=$'\e[31m'; reset=$'\e[0m'
+step() { printf '\n%s==> %s%s\n' "$bold" "$*" "$reset"; }
+skip() { printf '  %s· %s (schon erledigt)%s\n' "$green" "$*" "$reset"; }
+todo() { printf '  %s→ %s%s\n' "$yellow" "$*" "$reset"; }
+fail() { printf '  %s✗ %s%s\n' "$red" "$*" "$reset"; }
+
+# Echo the command in dry-run, execute it otherwise.
+run() {
+  if ((DRY)); then
+    printf '  %s  $ %s%s\n' "$yellow" "$*" "$reset"
+  else
+    "$@"
+  fi
+}
+
+((DRY)) && printf '%s*** TROCKENLAUF — es wird nichts verändert ***%s\n' "$bold$yellow" "$reset"
+
+# ── 0. Preflight ────────────────────────────────────────────────
+step "Voraussetzungen"
+abort=0
+if [[ ! -d $HOME/.local/share/omarchy/.git ]]; then
+  fail "kein Omarchy gefunden (~/.local/share/omarchy)"; abort=1
+else
+  branch=$(git -C "$HOME/.local/share/omarchy" rev-parse --abbrev-ref HEAD 2>/dev/null)
+  printf '  Omarchy-Branch: %s (Version %s)\n' "$branch" "$(cat "$HOME/.local/share/omarchy/version" 2>/dev/null)"
+  [[ $branch != "dev" ]] && todo "Quelle lief auf 'dev'. Anderer Branch = ggf. andere Hyprland-Version."
+fi
+if ! command -v hyprctl >/dev/null 2>&1 || ! hyprctl version >/dev/null 2>&1; then
+  fail "Hyprland läuft nicht — Plugin-Schritte brauchen eine laufende Session"; abort=1
+else
+  printf '  Hyprland: %s\n' "$(hyprctl version 2>/dev/null | head -1 | awk '{print $2}')"
+fi
+if [[ ! -f $HOME/.claude/.credentials.json ]]; then
+  todo "kein ~/.claude/.credentials.json — AI-Usage-Widget bleibt leer, bis 'claude' hier eingeloggt ist"
+fi
+((abort)) && { echo; fail "Abbruch."; exit 1; }
+
+# ── 1. Rise bar ─────────────────────────────────────────────────
+step "Quickshell 'Rise' Bar"
+if [[ -f $BAR_DIR/.qsrise ]]; then
+  skip "Bar installiert ($BAR_DIR, Version $(cat "$BAR_DIR/.qsrise" 2>/dev/null))"
+else
+  todo "Bar installieren (lädt $RISE_INSTALLER und führt ihn aus)"
+  todo "Flags: V1 --ai-backend --autostart"
+  if ((DRY)); then
+    printf '  %s  $ curl -fsSL %s -o /tmp/rise-install.sh%s\n' "$yellow" "$RISE_INSTALLER" "$reset"
+    printf '  %s  $ bash /tmp/rise-install.sh V1 --ai-backend --autostart%s\n' "$yellow" "$reset"
+  else
+    tmp=$(mktemp -d)
+    if curl -fsSL "$RISE_INSTALLER" -o "$tmp/install.sh"; then
+      bash "$tmp/install.sh" V1 --ai-backend --autostart || fail "Rise-Installer fehlgeschlagen"
+    else
+      fail "Installer-Download fehlgeschlagen"
+    fi
+    rm -rf "$tmp"
+  fi
+fi
+
+# ── 2. Weather city ─────────────────────────────────────────────
+# Both widgets call wttr.in without a location, which geolocates by IP.
+# Pinning the city is the only lever; the Rise updater reverts this.
+step "Wetter auf '$CITY' festnageln"
+for rel in modules/WeatherWidget.qml panels/WeatherPanel.qml; do
+  f="$BAR_DIR/$rel"
+  if [[ ! -f $f ]]; then
+    if ((DRY)); then todo "$rel (existiert erst nach der Bar-Installation)"; else fail "$rel nicht gefunden"; fi
+    continue
+  fi
+  if grep -q "wttr\.in/$CITY" "$f"; then
+    skip "$rel"
+  elif grep -q 'wttr\.in?format=j1' "$f"; then
+    todo "$rel patchen"
+    run sed -i "s|https://wttr\.in?format=j1|https://wttr.in/$CITY?format=j1|" "$f"
+  else
+    fail "$rel: erwartetes wttr.in-Muster nicht gefunden (Upstream geändert?)"
+  fi
+done
+
+# ── 3. Build deps ───────────────────────────────────────────────
+step "Build-Abhängigkeiten (für hyprpm)"
+missing=()
+for p in "${BUILD_DEPS[@]}"; do pacman -Qq "$p" &>/dev/null || missing+=("$p"); done
+if ((${#missing[@]} == 0)); then
+  skip "${BUILD_DEPS[*]}"
+else
+  todo "installieren: ${missing[*]}"
+  run sudo pacman -S --needed --noconfirm "${missing[@]}"
+fi
+
+# ── 4. hyprpm headers ───────────────────────────────────────────
+step "Hyprland-Header (hyprpm)"
+if [[ -d /usr/include/hyprland ]]; then
+  skip "Header vorhanden"
+else
+  todo "hyprpm update (klont Hyprland, baut Header — dauert Minuten, fragt nach sudo)"
+  run hyprpm update
+fi
+
+# ── 5. Plugin ───────────────────────────────────────────────────
+step "Plugin '$PLUGIN_NAME'"
+if hyprpm list 2>/dev/null | grep -q "$PLUGIN_NAME"; then
+  skip "Repository bereits hinzugefügt"
+else
+  todo "hyprpm add $PLUGIN_REPO (kompiliert gegen die laufende Hyprland-Version)"
+  run hyprpm add "$PLUGIN_REPO"
+fi
+
+if hyprctl plugin list 2>/dev/null | grep -qi "$PLUGIN_NAME"; then
+  skip "Plugin geladen"
+else
+  todo "hyprpm enable $PLUGIN_NAME && hyprpm reload"
+  todo "ACHTUNG: ein inkompatibles Plugin kann die Session crashen. Rettung: TTY (Ctrl+Alt+F2), 'hyprpm disable $PLUGIN_NAME'"
+  run hyprpm enable "$PLUGIN_NAME"
+  run hyprpm reload
+fi
+
+# ── 6. Summary ──────────────────────────────────────────────────
+step "Fertig"
+if ((DRY)); then
+  cat <<EOF
+  Trockenlauf beendet — nichts verändert.
+  Zum echten Lauf: ${0##*/}   (ohne --dry-run)
+EOF
+else
+  cat <<EOF
+  Noch von Hand (reine Configs, nicht Teil dieses Skripts):
+    ~/.config/hypr/hypridle.conf   — Idle 10/20 Min
+    ~/.config/hypr/bindings.lua    — SUPER+A Overview (mit if-Guard!)
+    ~/.config/hypr/autostart.lua   — o.exec_on_start("hyprpm reload -n")
+    ~/.config/hypr/input.lua       — 3-Finger-Geste an, drag_3fg aus
+    ~/.local/bin/omarchy-update-preview
+
+  Danach: hyprctl reload
+EOF
+fi
+echo

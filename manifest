@@ -1,0 +1,10 @@
+# Was wohin gehört. Links: Pfad im Repo. Rechts: Ziel relativ zu $HOME.
+# Von bootstrap (Repo -> System) und sync-back (System -> Repo) gelesen.
+# Kommentare und Leerzeilen werden ignoriert.
+
+config/hypr/hypridle.conf	.config/hypr/hypridle.conf
+config/hypr/bindings.lua	.config/hypr/bindings.lua
+config/hypr/autostart.lua	.config/hypr/autostart.lua
+config/hypr/input.lua	.config/hypr/input.lua
+bin/omarchy-update-preview	.local/bin/omarchy-update-preview
+bin/omarchy-setup-clone	.local/bin/omarchy-setup-clone
