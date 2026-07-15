@@ -5,8 +5,9 @@ Mein Omarchy-4-Setup (Channel `dev`), reproduzierbar auf einer zweiten Maschine.
 ## Auf einer neuen Kiste
 
 ```bash
-git clone <repo-url> ~/.omarchy-dots && ~/.omarchy-dots/bootstrap --dry-run   # erst schauen
-~/.omarchy-dots/bootstrap                                                      # dann machen
+git clone https://github.com/nerdislb/omarchy-dots.git ~/.omarchy-dots
+~/.omarchy-dots/bootstrap --dry-run   # erst schauen
+~/.omarchy-dots/bootstrap             # dann machen
 ```
 
 Voraussetzungen: Omarchy auf Channel `dev`, laufendes Hyprland, sudo, und für das
