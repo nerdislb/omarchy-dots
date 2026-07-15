@@ -8,3 +8,4 @@ config/hypr/autostart.lua	.config/hypr/autostart.lua
 config/hypr/input.lua	.config/hypr/input.lua
 bin/omarchy-update-preview	.local/bin/omarchy-update-preview
 bin/omarchy-setup-clone	.local/bin/omarchy-setup-clone
+bin/omarchy-dots-push	.local/bin/omarchy-dots-push

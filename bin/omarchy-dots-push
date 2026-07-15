@@ -1,0 +1,41 @@
+#!/bin/bash
+
+# One-shot: pull local system changes into the repo, commit, push.
+# Wraps sync-back (needed because the repo copies files instead of symlinking).
+#
+# Usage:
+#   omarchy-dots-push "commit message"
+#   omarchy-dots-push               # uses a timestamped default message
+
+set -uo pipefail
+
+REPO_DIR="$HOME/.omarchy-dots"
+bold=$'\e[1m'; green=$'\e[32m'; yellow=$'\e[33m'; red=$'\e[31m'; reset=$'\e[0m'
+
+[[ -d $REPO_DIR/.git ]] || { printf '%s✗ %s ist kein Git-Repo%s\n' "$red" "$REPO_DIR" "$reset"; exit 1; }
+
+msg="${1:-dots: sync $(date +%Y-%m-%d\ %H:%M)}"
+
+# 1) System -> Repo
+"$REPO_DIR/sync-back" || exit 1
+
+# 2) Nichts geändert? Dann fertig.
+if [[ -z $(git -C "$REPO_DIR" status --porcelain) ]]; then
+  printf '%s· nichts zu committen, alles aktuell%s\n' "$green" "$reset"
+  exit 0
+fi
+
+# 3) Commit + Push
+printf '\n%s==> commit + push%s\n' "$bold" "$reset"
+git -C "$REPO_DIR" add -A
+git -C "$REPO_DIR" commit -m "$msg" || exit 1
+
+if git -C "$REPO_DIR" push; then
+  printf '%s✓ gepusht%s\n' "$green" "$reset"
+else
+  # gh liefert die Credentials, ist aber evtl. nicht als globaler Helper gesetzt.
+  printf '%s… erneuter Versuch mit gh-Auth%s\n' "$yellow" "$reset"
+  git -C "$REPO_DIR" -c credential.helper='!gh auth git-credential' push \
+    && printf '%s✓ gepusht%s\n' "$green" "$reset" \
+    || { printf '%s✗ push fehlgeschlagen%s\n' "$red" "$reset"; exit 1; }
+fi
